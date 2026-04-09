@@ -5,7 +5,7 @@
 ## Features
 
 - Monitors all four Walt Disney World parks (Magic Kingdom, Epcot, Hollywood Studios, Animal Kingdom)
-- Updates every 5 minutes via the Theme Parks Wiki API
+- Updates every 10 seconds via the Theme Parks Wiki API
 - Sends notifications for:
   - Park opening (🚀 Code 108)
   - Park closing (🚫 Code 107)
