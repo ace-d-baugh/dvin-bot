@@ -15,7 +15,7 @@ const client = new Client({
 const CONFIG = {
   API_URL: 'https://api.themeparks.wiki/v1/entity/e957da41-3552-4cf6-b636-5babc5cbc4e5/live',
   SCHEDULE_API_URL: 'https://api.themeparks.wiki/v1/entity/{id}/schedule',
-  POLL_INTERVAL: 300000, // 10 seconds
+  POLL_INTERVAL: 10000, // 10 seconds
   DATA_FILE: path.join(__dirname, 'parkData.json'),
   PARKS: {
     MK: {
