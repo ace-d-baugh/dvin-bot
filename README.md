@@ -5,7 +5,7 @@
 ## Features
 
 - Monitors all four Walt Disney World parks (Magic Kingdom, Epcot, Hollywood Studios, Animal Kingdom)
-- Updates every 60 seconds via the Theme Parks Wiki API
+- Updates every 5 minutes via the Theme Parks Wiki API
 - Sends notifications for:
   - Park opening (🚀 Code 108)
   - Park closing (🚫 Code 107)
@@ -73,12 +73,12 @@ AK_PINNED_MSG_ID=animal_kingdom_pinned_message_id
 
 Start the bot:
 ```bash
-npm start
+node index.js
 ```
 
 For development with auto-restart:
 ```bash
-npm run dev
+node index.js npm run dev
 ```
 
 ## Custom Emojis
