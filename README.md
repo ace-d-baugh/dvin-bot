@@ -100,7 +100,7 @@ Upload these to your Discord server, then update the emoji codes in the `CONFIG.
 
 ## Data Storage
 
-The bot stores park and attraction data in `parkData.json`. This file is automatically created on first run and updated every 60 seconds.
+The bot stores park and attraction data in `parkData.json`. This file is automatically created on first run and updated every 10 seconds.
 
 ## Troubleshooting
 
