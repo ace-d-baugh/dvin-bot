@@ -720,12 +720,18 @@ async function sendWaitChangeNotification(parkKey, attr, newWait, oldWait) {
     }
 
     // Individual attraction channel — simplified message
-    if (attr.channelId) {
-      const attrChannel = await client.channels.fetch(attr.channelId);
+    // attr comes from storedData which has no channelId — look it up from ATTRACTIONS config
+    let attrChannelId = null;
+    for (const attrs of Object.values(ATTRACTIONS)) {
+      const found = attrs.find(a => a.id === attr.id);
+      if (found) { attrChannelId = found.channelId; break; }
+    }
+    if (attrChannelId) {
+      const attrChannel = await client.channels.fetch(attrChannelId);
       if (attrChannel) {
         const attrMessage = `${moodEmoji} wait ${arrowEmoji} from ${oldWaitEmoji} to ${newWaitEmoji} - ${time}`;
         const sentAttr = await attrChannel.send(attrMessage);
-        console.log(`Wait change: ${attrMessage}`);
+        console.log(`Wait change attraction: ${attrMessage}`);
         await logAttractionMessage(attr.id, sentAttr.id, 'wait');
       }
     }
