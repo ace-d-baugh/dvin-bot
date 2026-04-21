@@ -55,7 +55,9 @@ const CONFIG = {
   ALL_PARKS: {
     channelId: process.env.ALL_PARKS_STATUS_CHANNEL_ID,
     pinnedMsgId: process.env.ALL_PARKS_PINNED_MSG_ID
-  }
+  },
+  WAIT_CHANGE_CHANNEL_ID: process.env.WAIT_CHANGE_CHANNEL_ID,
+  WAIT_CHANGE_THRESHOLD: 20  // minutes — alert when wait shifts by this amount or more
 };
 
 const ATTRACTIONS = {
@@ -101,7 +103,7 @@ const ATTRACTIONS = {
     { name: "Frozen Ever After", shortName: "Frozen", id: "8d7ccdb1-a22b-4e26-8dc8-65b1938ed5f0", channelId: process.env.FROZEN_EVER_AFTER_CHANNEL_ID },
     { name: "Gran Fiesta Tour Starring The Three Caballeros", shortName: "Gran Fiesta", id: "22f48b73-01df-460e-8969-9eb2b4ae836c", channelId: process.env.GRAN_FIESTA_TOUR_CHANNEL_ID },
     { name: "Guardians of the Galaxy: Cosmic Rewind", shortName: "Guardians", id: "e3549451-b284-453d-9c31-e3b1207abd79", channelId: process.env.GUARDIANS_OF_GALAXY_CHANNEL_ID },
-    { name: "Living with the Land", shortName: "Living With The Land", id: "8f353879-d6ac-4211-9352-4029efb47c18", channelId: process.env.LIVING_WITH_LAND_CHANNEL_ID },
+    { name: "Living with the Land", shortName: "Living W Land", id: "8f353879-d6ac-4211-9352-4029efb47c18", channelId: process.env.LIVING_WITH_LAND_CHANNEL_ID },
     { name: "Mission: SPACE", shortName: "Mission Space", id: "5b6475ad-4e9a-4793-b841-501aa382c9c0", channelId: process.env.MISSION_SPACE_CHANNEL_ID },
     { name: "Journey of Water, Inspired by Moana", shortName: "Moana", id: "dae68dee-dfba-4128-b594-6aa12add1070", channelId: process.env.JOURNEY_OF_WATER_CHANNEL_ID },
     { name: "The Seas with Nemo & Friends", shortName: "Nemo", id: "fb076275-0570-4d62-b2a9-4d6515130fa3", channelId: process.env.SEAS_WITH_NEMO_CHANNEL_ID },
@@ -143,6 +145,11 @@ const lastAttractionStatus = {};
 
 // Track active down messages per attraction for deletion
 const activeDownMessages = {};
+
+// Track the last wait time that was used as a baseline for threshold comparisons.
+// Null means no valid baseline (attraction was down, just recovered, or never seen).
+// Reset to null when attraction goes DOWN; set to new wait on first reading after recovery.
+const lastReportedWaitTime = {};
 
 // Flag: true during the initial startup data sync — suppresses most notifications
 let isStartup = true;
@@ -186,6 +193,7 @@ async function initializeData() {
       };
       // Initialize last status tracking
       lastAttractionStatus[attr.id] = null;
+      lastReportedWaitTime[attr.id] = null;
     }
   }
 
@@ -216,6 +224,9 @@ async function loadData() {
         if (lastAttractionStatus[attr.id] === undefined) {
           lastAttractionStatus[attr.id] = null;
         }
+        if (lastReportedWaitTime[attr.id] === undefined) {
+          lastReportedWaitTime[attr.id] = null;
+        }
       }
     }
     
@@ -245,9 +256,12 @@ async function saveData(data) {
 async function loadMessageLog() {
   try {
     const raw = await fs.readFile(CONFIG.MESSAGE_LOG_FILE, 'utf8');
-    return JSON.parse(raw);
+    const log = JSON.parse(raw);
+    // Ensure waitChangeMessages key exists for older log files
+    if (!log.waitChangeMessages) log.waitChangeMessages = {};
+    return log;
   } catch {
-    return { parkMessages: {}, attractionMessages: {} };
+    return { parkMessages: {}, attractionMessages: {}, waitChangeMessages: {} };
   }
 }
 
@@ -285,6 +299,25 @@ async function clearAttractionMessageLog(attractionId) {
   const prefix = `${attractionId}_`;
   for (const key of Object.keys(log.attractionMessages)) {
     if (key.startsWith(prefix)) delete log.attractionMessages[key];
+  }
+  await saveMessageLog(log);
+}
+
+// Log a wait-change message. Key: attractionId_discordMessageId
+// parkKey stored so we know which park closing should clean it up.
+async function logWaitChangeMessage(attractionId, parkKey, discordMessageId) {
+  const log = await loadMessageLog();
+  const key = `${attractionId}_${discordMessageId}`;
+  log.waitChangeMessages[key] = { attractionId, parkKey, discordMessageId, sentAt: new Date().toISOString() };
+  await saveMessageLog(log);
+}
+
+// Remove all wait-change log entries for a given attractionId
+async function clearWaitChangeMessages(attractionId) {
+  const log = await loadMessageLog();
+  const prefix = `${attractionId}_`;
+  for (const key of Object.keys(log.waitChangeMessages)) {
+    if (key.startsWith(prefix)) delete log.waitChangeMessages[key];
   }
   await saveMessageLog(log);
 }
@@ -393,7 +426,29 @@ async function processMessageLogOnStartup(storedData) {
   for (const key of attrKeysToRemove) delete log.attractionMessages[key];
   await saveMessageLog(log);
 
-  console.log(`Startup log cleanup: removed ${parkKeysToRemove.length} park message(s), ${attrKeysToRemove.length} attraction message(s)`);
+  // ── Wait-change messages ───────────────────────────────────────────────────
+  // Reload log after prior saves so we're working on fresh data
+  const log2 = await loadMessageLog();
+  const waitKeysToRemove = [];
+
+  for (const [key, entry] of Object.entries(log2.waitChangeMessages)) {
+    const park = CONFIG.PARKS[entry.parkKey];
+    if (!park) { waitKeysToRemove.push(key); continue; }
+
+    const parkData = storedData.parks[park.id];
+    const parkIsClosed = !isWithinParkHours(parkData);
+
+    if (parkIsClosed) {
+      await tryDeleteDiscordMessage(CONFIG.WAIT_CHANGE_CHANNEL_ID, entry.discordMessageId);
+      waitKeysToRemove.push(key);
+    }
+    // Otherwise leave — persists until park close
+  }
+
+  for (const key of waitKeysToRemove) delete log2.waitChangeMessages[key];
+  await saveMessageLog(log2);
+
+  console.log(`Startup log cleanup: removed ${parkKeysToRemove.length} park message(s), ${attrKeysToRemove.length} attraction message(s), ${waitKeysToRemove.length} wait-change message(s)`);
 }
 
 // Fetch live data from API
@@ -638,6 +693,44 @@ async function sendAttractionStatus(attractionId, code, parkKey) {
   } catch (error) {
     console.error(`Error sending attraction status for ${attractionId}:`, error.message);
     return null;
+  }
+}
+
+// Send a wait-time change alert to #wait-change channel and the individual attraction channel
+async function sendWaitChangeNotification(parkKey, attr, newWait, oldWait) {
+  if (isStartup) return; // Silent on startup
+  if (!CONFIG.WAIT_CHANGE_CHANNEL_ID) return;
+
+  try {
+    const park = CONFIG.PARKS[parkKey];
+    const increased = newWait > oldWait;
+    const moodEmoji = increased ? '😡' : '😀';
+    const arrowEmoji = increased ? '↗️' : '↘️';
+    const newWaitEmoji = waitTimeToEmoji(newWait);
+    const oldWaitEmoji = waitTimeToEmoji(oldWait);
+    const time = formatTime(new Date());
+
+    // General #wait-change channel — full message with park/attraction context
+    const generalChannel = await client.channels.fetch(CONFIG.WAIT_CHANGE_CHANNEL_ID);
+    if (generalChannel) {
+      const generalMessage = `${moodEmoji}${park.emoji}${park.shortName}-${attr.shortName} wait ${arrowEmoji} from ${oldWaitEmoji} to ${newWaitEmoji} - ${time}`;
+      const sent = await generalChannel.send(generalMessage);
+      console.log(`Wait change: ${generalMessage}`);
+      await logWaitChangeMessage(attr.id, parkKey, sent.id);
+    }
+
+    // Individual attraction channel — simplified message
+    if (attr.channelId) {
+      const attrChannel = await client.channels.fetch(attr.channelId);
+      if (attrChannel) {
+        const attrMessage = `${moodEmoji} wait ${arrowEmoji} from ${oldWaitEmoji} to ${newWaitEmoji} - ${time}`;
+        const sentAttr = await attrChannel.send(attrMessage);
+        console.log(`Wait change: ${attrMessage}`);
+        await logAttractionMessage(attr.id, sentAttr.id, 'wait');
+      }
+    }
+  } catch (error) {
+    console.error(`Error sending wait change notification for ${attr.shortName}:`, error.message);
   }
 }
 
@@ -910,6 +1003,25 @@ async function processData() {
         }
         // Clear park message log entries for this attraction
         await clearParkMessageLog(parkKey, attr.id);
+        // Delete wait-change Discord messages for this attraction then clear log
+        if (CONFIG.WAIT_CHANGE_CHANNEL_ID) {
+          const wcLog = await loadMessageLog();
+          const wcPrefix = `${attr.id}_`;
+          try {
+            const wcChannel = await client.channels.fetch(CONFIG.WAIT_CHANGE_CHANNEL_ID);
+            for (const [key, entry] of Object.entries(wcLog.waitChangeMessages)) {
+              if (key.startsWith(wcPrefix)) {
+                try {
+                  const wcMsg = await wcChannel.messages.fetch(entry.discordMessageId);
+                  await wcMsg.delete();
+                } catch {}
+              }
+            }
+          } catch {}
+        }
+        await clearWaitChangeMessages(attr.id);
+        // Reset wait baseline
+        lastReportedWaitTime[attr.id] = null;
       }
 
       // Send park closing notification
@@ -921,7 +1033,31 @@ async function processData() {
       const liveAttr = attr.liveData;
       if (!liveAttr) continue;
       const standbyWait = liveAttr.queue?.STANDBY?.waitTime;
-      storedData.attractions[attr.id].waitTime = (typeof standbyWait === 'number') ? standbyWait : null;
+      const newWait = (typeof standbyWait === 'number') ? standbyWait : null;
+      storedData.attractions[attr.id].waitTime = newWait;
+
+      const storedAttr = storedData.attractions[attr.id];
+      const baseline = lastReportedWaitTime[attr.id];
+      const attrIsOperating = storedAttr.status === 'operating';
+
+      if (attrIsOperating && typeof newWait === 'number') {
+        if (typeof baseline === 'number') {
+          // Have a valid baseline — check threshold
+          if (Math.abs(newWait - baseline) >= CONFIG.WAIT_CHANGE_THRESHOLD) {
+            await sendWaitChangeNotification(parkKey, attr, newWait, baseline);
+            lastReportedWaitTime[attr.id] = newWait;
+          }
+        } else {
+          // No baseline yet (startup, or first reading after recovery) — set silently
+          lastReportedWaitTime[attr.id] = newWait;
+        }
+      } else if (!attrIsOperating || newWait === null) {
+        // Attraction not operating or wait is null — keep baseline as null
+        // (recovery baseline is set in the 102 recovery block above)
+        if (storedAttr.status !== 'operating') {
+          lastReportedWaitTime[attr.id] = null;
+        }
+      }
     }
 
     // Handle individual attraction changes during park hours
@@ -937,6 +1073,8 @@ async function processData() {
           storedAttr.status = 'closed';
           storedAttr.code = 101;
           storedAttr.lastChanged = now;
+          // Null out the wait baseline — first wait after recovery is the new baseline
+          lastReportedWaitTime[attr.id] = null;
           const downMsg = await sendNotification(parkKey, `❌ 101 - ${attr.shortName} - ${park.emoji}${park.shortName} - ${currentTime}`, 101, attr.id);
           if (downMsg) activeDownMessages[attr.id] = downMsg;
           
@@ -970,6 +1108,9 @@ async function processData() {
           }
           // Clear the 101 park message log entry for this attraction
           await clearParkMessageLog(parkKey, attr.id);
+          // First wait after recovery is the new baseline — set it from live data
+          const recoveryWait = liveAttr.queue?.STANDBY?.waitTime;
+          lastReportedWaitTime[attr.id] = (typeof recoveryWait === 'number') ? recoveryWait : null;
           await sendNotification(parkKey, `🟢 102 - ${attr.shortName} - ${park.emoji}${park.shortName} - ${currentTime}`, 102, attr.id);
           
           // Send individual attraction status

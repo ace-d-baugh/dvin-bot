@@ -6,6 +6,7 @@ node_modules/
 
 # Data files
 parkData.json
+messageLog.json
 
 # Logs
 *.log

@@ -17,6 +17,7 @@ const CONFIG = {
   SCHEDULE_API_URL: 'https://api.themeparks.wiki/v1/entity/{id}/schedule',
   POLL_INTERVAL: 10000, // 10 seconds
   DATA_FILE: path.join(__dirname, 'parkData.json'),
+  MESSAGE_LOG_FILE: path.join(__dirname, 'messageLog.json'),
   PARKS: {
     MK: {
       name: 'Magic Kingdom',
@@ -100,7 +101,7 @@ const ATTRACTIONS = {
     { name: "Frozen Ever After", shortName: "Frozen", id: "8d7ccdb1-a22b-4e26-8dc8-65b1938ed5f0", channelId: process.env.FROZEN_EVER_AFTER_CHANNEL_ID },
     { name: "Gran Fiesta Tour Starring The Three Caballeros", shortName: "Gran Fiesta", id: "22f48b73-01df-460e-8969-9eb2b4ae836c", channelId: process.env.GRAN_FIESTA_TOUR_CHANNEL_ID },
     { name: "Guardians of the Galaxy: Cosmic Rewind", shortName: "Guardians", id: "e3549451-b284-453d-9c31-e3b1207abd79", channelId: process.env.GUARDIANS_OF_GALAXY_CHANNEL_ID },
-    { name: "Living with the Land", shortName: "Living With The Land", id: "8f353879-d6ac-4211-9352-4029efb47c18", channelId: process.env.LIVING_WITH_LAND_CHANNEL_ID },
+    { name: "Living with the Land", shortName: "Living W Land", id: "8f353879-d6ac-4211-9352-4029efb47c18", channelId: process.env.LIVING_WITH_LAND_CHANNEL_ID },
     { name: "Mission: SPACE", shortName: "Mission Space", id: "5b6475ad-4e9a-4793-b841-501aa382c9c0", channelId: process.env.MISSION_SPACE_CHANNEL_ID },
     { name: "Journey of Water, Inspired by Moana", shortName: "Moana", id: "dae68dee-dfba-4128-b594-6aa12add1070", channelId: process.env.JOURNEY_OF_WATER_CHANNEL_ID },
     { name: "The Seas with Nemo & Friends", shortName: "Nemo", id: "fb076275-0570-4d62-b2a9-4d6515130fa3", channelId: process.env.SEAS_WITH_NEMO_CHANNEL_ID },
@@ -132,7 +133,7 @@ const ATTRACTIONS = {
     { name: "Kilimanjaro Safaris", shortName: "Safari", id: "32e01181-9a5f-4936-8a77-0dace1de836c", channelId: process.env.KILIMANJARO_SAFARI_CHANNEL_ID },
     { name: "Maharajah Jungle Trek", shortName: "Maharaja", id: "1a8ea967-229a-42a0-8290-59b036c84e14", channelId: process.env.MAHARAJA_TREK_CHANNEL_ID },
     { name: "Na'vi River Journey", shortName: "Navi", id: "7a5af3b7-9bc1-4962-92d0-3ea9c9ce35f0", channelId: process.env.NAVI_RIVER_JOURNEY_CHANNEL_ID },
-    { name: "Wildlife Express Train", shortName: "Wildlife Express", id: "4f391f0e-52be-4f9d-99d6-b3ae0373b43c", channelId: process.env.WILDLIFE_EXPRESS_CHANNEL_ID },
+    { name: "Wildlife Express Train", shortName: "Wild Exps", id: "4f391f0e-52be-4f9d-99d6-b3ae0373b43c", channelId: process.env.WILDLIFE_EXPRESS_CHANNEL_ID },
     { name: "Zootopia: Better Zoogether!", shortName: "Zootopia", id: "1b15c77b-0311-4171-8e59-7f38e6d60754", channelId: process.env.ZOOTOPIA_CHANNEL_ID }
   ]
 };
@@ -142,6 +143,14 @@ const lastAttractionStatus = {};
 
 // Track active down messages per attraction for deletion
 const activeDownMessages = {};
+
+// Flag: true during the initial startup data sync — suppresses most notifications
+let isStartup = true;
+
+// Mutex: prevents processData() and fetchAllParkSchedules() from running concurrently,
+// which would cause last-write-wins clobbering of saved data (duplicate close notifications,
+// lost schedule updates, etc.)
+let isProcessing = false;
 
 // Initialize data storage
 async function initializeData() {
@@ -222,6 +231,171 @@ async function saveData(data) {
   await fs.writeFile(CONFIG.DATA_FILE, JSON.stringify(data, null, 2));
 }
 
+// ─── Message Log ────────────────────────────────────────────────────────────
+// Structure:
+// {
+//   parkMessages: {
+//     "<parkKey>_<attractionId>_<discordMessageId>": { code, discordMessageId, sentAt }
+//   },
+//   attractionMessages: {
+//     "<attractionId>_<discordMessageId>": { code, discordMessageId, sentAt }
+//   }
+// }
+
+async function loadMessageLog() {
+  try {
+    const raw = await fs.readFile(CONFIG.MESSAGE_LOG_FILE, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return { parkMessages: {}, attractionMessages: {} };
+  }
+}
+
+async function saveMessageLog(log) {
+  await fs.writeFile(CONFIG.MESSAGE_LOG_FILE, JSON.stringify(log, null, 2));
+}
+
+async function logParkMessage(parkKey, attractionId, discordMessageId, code) {
+  const log = await loadMessageLog();
+  const key = `${parkKey}_${attractionId}_${discordMessageId}`;
+  log.parkMessages[key] = { code, discordMessageId, sentAt: new Date().toISOString() };
+  await saveMessageLog(log);
+}
+
+async function logAttractionMessage(attractionId, discordMessageId, code) {
+  const log = await loadMessageLog();
+  const key = `${attractionId}_${discordMessageId}`;
+  log.attractionMessages[key] = { code, discordMessageId, sentAt: new Date().toISOString() };
+  await saveMessageLog(log);
+}
+
+// Remove all park message log entries for a given parkKey (and optionally attractionId)
+async function clearParkMessageLog(parkKey, attractionId = null) {
+  const log = await loadMessageLog();
+  const prefix = attractionId ? `${parkKey}_${attractionId}_` : `${parkKey}_`;
+  for (const key of Object.keys(log.parkMessages)) {
+    if (key.startsWith(prefix)) delete log.parkMessages[key];
+  }
+  await saveMessageLog(log);
+}
+
+// Remove all attraction message log entries for a given attractionId
+async function clearAttractionMessageLog(attractionId) {
+  const log = await loadMessageLog();
+  const prefix = `${attractionId}_`;
+  for (const key of Object.keys(log.attractionMessages)) {
+    if (key.startsWith(prefix)) delete log.attractionMessages[key];
+  }
+  await saveMessageLog(log);
+}
+
+// On startup: process the message log — delete expired/stale messages and re-register
+// active 101 down messages into activeDownMessages for runtime tracking.
+async function processMessageLogOnStartup(storedData) {
+  const log = await loadMessageLog();
+  const now = new Date();
+  const fiveMinMs = 5 * 60 * 1000;
+
+  // Helper: try to delete a Discord message by channel + message ID
+  async function tryDeleteDiscordMessage(channelId, discordMessageId) {
+    if (!channelId || !discordMessageId) return;
+    try {
+      const channel = await client.channels.fetch(channelId);
+      if (!channel) return;
+      const msg = await channel.messages.fetch(discordMessageId);
+      await msg.delete();
+    } catch {
+      // Message already deleted or inaccessible — ignore
+    }
+  }
+
+  // ── Park messages ──────────────────────────────────────────────────────────
+  const parkKeysToRemove = [];
+
+  for (const [key, entry] of Object.entries(log.parkMessages)) {
+    // Key format: parkKey_attractionId_discordMessageId
+    const parts = key.split('_');
+    const parkKey = parts[0];
+    const attractionId = parts.slice(1, -1).join('_'); // attraction IDs contain hyphens not underscores, but be safe
+    const park = CONFIG.PARKS[parkKey];
+    if (!park) { parkKeysToRemove.push(key); continue; }
+
+    const sentAt = new Date(entry.sentAt);
+    const parkData = storedData.parks[park.id];
+    const parkIsClosed = !isWithinParkHours(parkData);
+
+    if (entry.code === 101) {
+      // If park is now closed, delete the 101 message and remove from log
+      if (parkIsClosed) {
+        await tryDeleteDiscordMessage(park.channelId, entry.discordMessageId);
+        parkKeysToRemove.push(key);
+      } else {
+        // Park is still open — re-register into activeDownMessages so runtime can delete it on recovery
+        // We store a minimal proxy object with a delete method
+        const channelId = park.channelId;
+        const discordMsgId = entry.discordMessageId;
+        activeDownMessages[attractionId] = {
+          delete: async () => {
+            await tryDeleteDiscordMessage(channelId, discordMsgId);
+          }
+        };
+        // Do NOT remove from log yet — clearParkMessageLog will be called when deleted at runtime
+      }
+    } else if (entry.code === 102 || entry.code === 107 || entry.code === 108) {
+      // These auto-delete after 5 minutes — if expired, delete from Discord and log
+      const age = now - sentAt;
+      if (age >= fiveMinMs || parkIsClosed) {
+        await tryDeleteDiscordMessage(park.channelId, entry.discordMessageId);
+        parkKeysToRemove.push(key);
+      } else {
+        // Still within 5 min window — schedule the remaining deletion
+        const remaining = fiveMinMs - age;
+        const channelId = park.channelId;
+        const discordMsgId = entry.discordMessageId;
+        setTimeout(async () => {
+          await tryDeleteDiscordMessage(channelId, discordMsgId);
+          const currentLog = await loadMessageLog();
+          delete currentLog.parkMessages[key];
+          await saveMessageLog(currentLog);
+        }, remaining);
+      }
+    }
+  }
+
+  // ── Attraction messages ────────────────────────────────────────────────────
+  const attrKeysToRemove = [];
+
+  for (const [key, entry] of Object.entries(log.attractionMessages)) {
+    // Key format: attractionId_discordMessageId
+    // Find which park this attraction belongs to
+    let attrConfig = null;
+    let parkKey = null;
+    for (const [pk, attrs] of Object.entries(ATTRACTIONS)) {
+      const found = attrs.find(a => key.startsWith(a.id + '_'));
+      if (found) { attrConfig = found; parkKey = pk; break; }
+    }
+    if (!attrConfig) { attrKeysToRemove.push(key); continue; }
+
+    const park = CONFIG.PARKS[parkKey];
+    const parkData = storedData.parks[park.id];
+    const parkIsClosed = !isWithinParkHours(parkData);
+
+    if (parkIsClosed) {
+      // Park closed while app was down — delete the attraction channel message
+      await tryDeleteDiscordMessage(attrConfig.channelId, entry.discordMessageId);
+      attrKeysToRemove.push(key);
+    }
+    // Otherwise leave in log — it persists until park close
+  }
+
+  // Batch remove processed keys from log
+  for (const key of parkKeysToRemove) delete log.parkMessages[key];
+  for (const key of attrKeysToRemove) delete log.attractionMessages[key];
+  await saveMessageLog(log);
+
+  console.log(`Startup log cleanup: removed ${parkKeysToRemove.length} park message(s), ${attrKeysToRemove.length} attraction message(s)`);
+}
+
 // Fetch live data from API
 async function fetchLiveData() {
   try {
@@ -298,17 +472,27 @@ function scheduleDailyHoursUpdate() {
 
 // Fetch and store schedule segments for all parks
 async function fetchAllParkSchedules() {
-  console.log('Fetching park schedules...');
-  const storedData = await loadData();
-  for (const [parkKey, park] of Object.entries(CONFIG.PARKS)) {
-    const segments = await fetchParkSchedule(park.id);
-    storedData.parks[park.id].hours.segments = segments;
-    // Also reset park status to closed so opening logic fires fresh each day
-    storedData.parks[park.id].status = 'closed';
-    storedData.parks[park.id].code = 107;
-    console.log(`Fetched schedule for ${parkKey}: ${segments.length} segment(s)`);
+  // Wait for any in-progress processData to finish before modifying shared data
+  while (isProcessing) {
+    await new Promise(resolve => setTimeout(resolve, 500));
   }
-  await saveData(storedData);
+  isProcessing = true;
+  try {
+    console.log('Fetching park schedules...');
+    const storedData = await loadData();
+    for (const [parkKey, park] of Object.entries(CONFIG.PARKS)) {
+      const segments = await fetchParkSchedule(park.id);
+      // Completely overwrite hours so stale segments from the previous day are removed
+      storedData.parks[park.id].hours = { segments };
+      // Also reset park status to closed so opening logic fires fresh each day
+      storedData.parks[park.id].status = 'closed';
+      storedData.parks[park.id].code = 107;
+      console.log(`Fetched schedule for ${parkKey}: ${segments.length} segment(s)`);
+    }
+    await saveData(storedData);
+  } finally {
+    isProcessing = false;
+  }
 }
 
 // Check if current time falls within any of the park's schedule segments
@@ -358,14 +542,25 @@ function getStatusEmoji(code) {
     101: '❌',  // Down
     102: '🟢',  // Operating
     103: '🔧',  // Refurbishment
-    107: '🚫',  // Closed
-    108: '🚀'   // Opening
+    107: '⬛️',  // Closed
+    108: '🚀'   // Open
   };
   return emojiMap[code] || '❓';
 }
 
+// Convert a wait time (integer minutes) to a 3-digit emoji string e.g. 5 -> 0️⃣0️⃣5️⃣
+function waitTimeToEmoji(minutes) {
+  const digitEmojis = ['0️⃣','1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣'];
+  const clamped = Math.min(Math.max(Math.floor(minutes), 0), 999);
+  const str = clamped.toString().padStart(3, '0');
+  return str.split('').map(d => digitEmojis[parseInt(d)]).join('');
+}
+
 // Send notification to park channel
-async function sendNotification(parkKey, message, code) {
+async function sendNotification(parkKey, message, code, attractionId = null) {
+  // During startup, only allow 101 (DOWN) notifications — all others are silent
+  if (isStartup && code !== 101) return null;
+
   try {
     const park = CONFIG.PARKS[parkKey];
     if (!park || !park.channelId) return null;
@@ -376,10 +571,21 @@ async function sendNotification(parkKey, message, code) {
     const sent = await channel.send(message);
     console.log(`Sent notification to ${parkKey}: ${message}`);
 
+    // Log the message for restart recovery
+    if (attractionId) {
+      await logParkMessage(parkKey, attractionId, sent.id, code);
+    }
+
     if (code !== 101) {
       // 102, 107, 108 all auto-delete after 5 minutes
-      setTimeout(() => {
+      const msgKey = attractionId ? `${parkKey}_${attractionId}_${sent.id}` : null;
+      setTimeout(async () => {
         sent.delete().catch(() => {});
+        if (msgKey) {
+          const log = await loadMessageLog();
+          delete log.parkMessages[msgKey];
+          await saveMessageLog(log);
+        }
       }, 5 * 60 * 1000);
     }
 
@@ -392,6 +598,9 @@ async function sendNotification(parkKey, message, code) {
 
 // Send status message to individual attraction channel
 async function sendAttractionStatus(attractionId, code, parkKey) {
+  // During startup, suppress all attraction channel messages
+  if (isStartup) return null;
+
   try {
     // Find the attraction
     let attraction = null;
@@ -419,6 +628,9 @@ async function sendAttractionStatus(attractionId, code, parkKey) {
     
     const sentMessage = await channel.send(message);
     
+    // Log for restart recovery
+    await logAttractionMessage(attractionId, sentMessage.id, code);
+
     // Update last sent status
     lastAttractionStatus[attractionId] = code;
     
@@ -477,12 +689,24 @@ async function deleteAttractionMessages(attractionId) {
       console.log(`  Deleted ${deleted} messages from ${attraction.shortName} channel`);
     }
     
+    // Clear attraction message log entries
+    await clearAttractionMessageLog(attractionId);
+
     // Reset last status tracking
     lastAttractionStatus[attractionId] = null;
     
   } catch (error) {
     console.error(`Error deleting messages for ${attractionId}:`, error.message);
   }
+}
+
+// Get the display prefix for an attraction: wait time emojis if operating with a wait, otherwise tripled status emoji
+function getAttractionPrefix(attr) {
+  if (attr.code === 102 && typeof attr.waitTime === 'number' && attr.waitTime >= 0) {
+    return waitTimeToEmoji(attr.waitTime);
+  }
+  const emoji = getStatusEmoji(attr.code);
+  return `${emoji}${emoji}${emoji}`;
 }
 
 // Format attractions into two columns
@@ -496,15 +720,15 @@ function formatAttractionColumns(attractions) {
   let output = '';
   for (let i = 0; i < halfLength; i++) {
     const attr1 = column1[i];
-    const emoji1 = getStatusEmoji(attr1.code);
+    const prefix1 = getAttractionPrefix(attr1);
     const name1 = attr1.shortName.padEnd(maxNameLength);
     
-    let line = `${emoji1} ${name1}`;
+    let line = `${prefix1} ${name1}`;
     
     if (column2[i]) {
       const attr2 = column2[i];
-      const emoji2 = getStatusEmoji(attr2.code);
-      line += `  ${emoji2} ${attr2.shortName}`;
+      const prefix2 = getAttractionPrefix(attr2);
+      line += `  ${prefix2} ${attr2.shortName}`;
     }
     
     output += line + '\n';
@@ -599,6 +823,10 @@ async function updateAllParksPinnedMessage(storedData) {
 
 // Process data and handle updates
 async function processData() {
+  // Guard against concurrent executions (setInterval fires regardless of prior completion)
+  if (isProcessing) return;
+  isProcessing = true;
+  try {
   const liveData = await fetchLiveData();
   if (!liveData) {
     console.log('Skipping update due to API fetch failure');
@@ -633,7 +861,7 @@ async function processData() {
       storedPark.code = 108;
       storedPark.lastChanged = now;
       
-      // Send park opening notification
+      // Send park opening notification (suppressed on startup)
       await sendNotification(parkKey, `🚀 108 - ${park.emoji}${park.shortName} - ${currentTime}`, 108);
       
       // Open all attractions that are operating
@@ -646,12 +874,12 @@ async function processData() {
           storedData.attractions[attr.id].lastChanged = now;
           openingAttractions.push(attr.shortName);
           
-          // Send individual attraction status (108 for park opening)
+          // Send individual attraction status (suppressed on startup)
           await sendAttractionStatus(attr.id, 108, parkKey);
         }
       }
       
-      // Send notification for all opening attractions
+      // Send notification for all opening attractions (suppressed on startup)
       if (openingAttractions.length > 0) {
         const attrMessage = openingAttractions.join(', ');
         await sendNotification(parkKey, `🟢 102 - ${attrMessage} - ${park.emoji}${park.shortName} - ${currentTime}`, 102);
@@ -680,12 +908,22 @@ async function processData() {
           activeDownMessages[attr.id].delete().catch(() => {});
           delete activeDownMessages[attr.id];
         }
+        // Clear park message log entries for this attraction
+        await clearParkMessageLog(parkKey, attr.id);
       }
 
       // Send park closing notification
       await sendNotification(parkKey, `🚫 107 - ${park.emoji}${park.shortName} - ${currentTime}`, 107);
     }
     
+    // Always update wait times from live data (regardless of status change)
+    for (const attr of parkAttractions) {
+      const liveAttr = attr.liveData;
+      if (!liveAttr) continue;
+      const standbyWait = liveAttr.queue?.STANDBY?.waitTime;
+      storedData.attractions[attr.id].waitTime = (typeof standbyWait === 'number') ? standbyWait : null;
+    }
+
     // Handle individual attraction changes during park hours
     if (withinHours && storedPark.status === 'operating') {
       for (const attr of parkAttractions) {
@@ -694,16 +932,30 @@ async function processData() {
         
         if (!liveAttr) continue;
         
-        // Attraction closed during operating hours
+        // Attraction breakdown during operating hours (DOWN = 101 ❌)
         if (liveAttr.status === 'DOWN' && storedAttr.status === 'operating') {
           storedAttr.status = 'closed';
           storedAttr.code = 101;
           storedAttr.lastChanged = now;
-          const downMsg = await sendNotification(parkKey, `❌ 101 - ${attr.shortName} - ${park.emoji}${park.shortName} - ${currentTime}`, 101);
+          const downMsg = await sendNotification(parkKey, `❌ 101 - ${attr.shortName} - ${park.emoji}${park.shortName} - ${currentTime}`, 101, attr.id);
           if (downMsg) activeDownMessages[attr.id] = downMsg;
           
           // Send individual attraction status
           await sendAttractionStatus(attr.id, 101, parkKey);
+        }
+        
+        // Attraction closes early before park close (CLOSED = 107 ⬛️)
+        if (liveAttr.status === 'CLOSED' && storedAttr.status === 'operating') {
+          storedAttr.status = 'closed';
+          storedAttr.code = 107;
+          storedAttr.lastChanged = now;
+          await sendNotification(parkKey, `⬛️ 107 - ${attr.shortName} - ${park.emoji}${park.shortName} - ${currentTime}`, 107, attr.id);
+          
+          // Send individual attraction status
+          await sendAttractionStatus(attr.id, 107, parkKey);
+          
+          // Delete messages in the attraction channel
+          await deleteAttractionMessages(attr.id);
         }
         
         // Attraction opened during operating hours
@@ -716,7 +968,9 @@ async function processData() {
             activeDownMessages[attr.id].delete().catch(() => {});
             delete activeDownMessages[attr.id];
           }
-          await sendNotification(parkKey, `🟢 102 - ${attr.shortName} - ${park.emoji}${park.shortName} - ${currentTime}`, 102);
+          // Clear the 101 park message log entry for this attraction
+          await clearParkMessageLog(parkKey, attr.id);
+          await sendNotification(parkKey, `🟢 102 - ${attr.shortName} - ${park.emoji}${park.shortName} - ${currentTime}`, 102, attr.id);
           
           // Send individual attraction status
           await sendAttractionStatus(attr.id, 102, parkKey);
@@ -743,6 +997,9 @@ async function processData() {
   
   // Save updated data
   await saveData(storedData);
+  } finally {
+    isProcessing = false;
+  }
 }
 
 // Bot ready event
@@ -757,13 +1014,19 @@ client.once('ready', async () => {
   // restarts during the day the segments array is empty and isWithinParkHours()
   // always returns false, causing attractions to never update.
   await fetchAllParkSchedules();
+
+  // Process the message log: delete expired/stale messages, re-register active 101s
+  const storedDataForLog = await loadData();
+  await processMessageLogOnStartup(storedDataForLog);
   
   // Schedule daily hours fetch at 2:00 AM ET
   scheduleDailyHoursUpdate();
   
-  // Start polling
-  console.log('Starting park data polling...');
-  processData(); // Run immediately
+  // Start polling — first call is the silent startup sync
+  console.log('Starting park data polling (startup sync — notifications suppressed except 101)...');
+  await processData(); // Run immediately and await so isStartup covers it fully
+  isStartup = false;   // All subsequent polls send notifications normally
+  console.log('Startup sync complete. Notifications now active.');
   setInterval(processData, CONFIG.POLL_INTERVAL);
 });
 
