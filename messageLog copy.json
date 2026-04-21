@@ -771,6 +771,36 @@
       "code": "wait",
       "discordMessageId": "1496173399205220474",
       "sentAt": "2026-04-21T15:38:55.449Z"
+    },
+    "34c4916b-989b-4ff1-a7e3-a6a846a3484f_1496176212525977712": {
+      "code": "wait",
+      "discordMessageId": "1496176212525977712",
+      "sentAt": "2026-04-21T15:50:06.103Z"
+    },
+    "20b5daa8-e1ea-436f-830c-2d7d18d929b5_1496176759861940344": {
+      "code": "wait",
+      "discordMessageId": "1496176759861940344",
+      "sentAt": "2026-04-21T15:52:16.642Z"
+    },
+    "37ae57c5-feaf-4e47-8f27-4b385be200f0_1496177009641127966": {
+      "code": "wait",
+      "discordMessageId": "1496177009641127966",
+      "sentAt": "2026-04-21T15:53:16.152Z"
+    },
+    "24cf863c-b6ba-4826-a056-0b698989cbf7_1496177768214429776": {
+      "code": "wait",
+      "discordMessageId": "1496177768214429776",
+      "sentAt": "2026-04-21T15:56:17.033Z"
+    },
+    "86a41273-5f15-4b54-93b6-829f140e5161_1496178017049772174": {
+      "code": "wait",
+      "discordMessageId": "1496178017049772174",
+      "sentAt": "2026-04-21T15:57:16.339Z"
+    },
+    "72c7343a-f7fb-4f66-95df-c91016de7338_1496178814764581035": {
+      "code": "wait",
+      "discordMessageId": "1496178814764581035",
+      "sentAt": "2026-04-21T16:00:26.591Z"
     }
   },
   "waitChangeMessages": {
@@ -1127,6 +1157,42 @@
       "parkKey": "MK",
       "discordMessageId": "1496173398731002019",
       "sentAt": "2026-04-21T15:38:55.294Z"
+    },
+    "34c4916b-989b-4ff1-a7e3-a6a846a3484f_1496176211670470687": {
+      "attractionId": "34c4916b-989b-4ff1-a7e3-a6a846a3484f",
+      "parkKey": "HS",
+      "discordMessageId": "1496176211670470687",
+      "sentAt": "2026-04-21T15:50:05.986Z"
+    },
+    "20b5daa8-e1ea-436f-830c-2d7d18d929b5_1496176758909698230": {
+      "attractionId": "20b5daa8-e1ea-436f-830c-2d7d18d929b5",
+      "parkKey": "HS",
+      "discordMessageId": "1496176758909698230",
+      "sentAt": "2026-04-21T15:52:16.464Z"
+    },
+    "37ae57c5-feaf-4e47-8f27-4b385be200f0_1496177009011855582": {
+      "attractionId": "37ae57c5-feaf-4e47-8f27-4b385be200f0",
+      "parkKey": "EP",
+      "discordMessageId": "1496177009011855582",
+      "sentAt": "2026-04-21T15:53:16.007Z"
+    },
+    "24cf863c-b6ba-4826-a056-0b698989cbf7_1496177767270711479": {
+      "attractionId": "24cf863c-b6ba-4826-a056-0b698989cbf7",
+      "parkKey": "AK",
+      "discordMessageId": "1496177767270711479",
+      "sentAt": "2026-04-21T15:56:16.842Z"
+    },
+    "86a41273-5f15-4b54-93b6-829f140e5161_1496178016093602044": {
+      "attractionId": "86a41273-5f15-4b54-93b6-829f140e5161",
+      "parkKey": "MK",
+      "discordMessageId": "1496178016093602044",
+      "sentAt": "2026-04-21T15:57:16.200Z"
+    },
+    "72c7343a-f7fb-4f66-95df-c91016de7338_1496178813330264265": {
+      "attractionId": "72c7343a-f7fb-4f66-95df-c91016de7338",
+      "parkKey": "MK",
+      "discordMessageId": "1496178813330264265",
+      "sentAt": "2026-04-21T16:00:26.327Z"
     }
   }
 }
